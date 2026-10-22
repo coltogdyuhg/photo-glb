@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><title>Photo → GLB</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<style>
+:root{--bg:#f6f5f2;--pn:#fff;--tx:#1c1b19;--mu:#6b6962;--bd:#dedbd3;--ac:#4f46e5;--vp:#e6e4de;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media(prefers-color-scheme:dark){:root:not([data-theme="light"]){color-scheme:dark;--bg:#151514;--pn:#1f1f1d;--tx:#eeece6;--mu:#9a978e;--bd:#33322f;--ac:#8b84ff;--vp:#101010}}
+:root[data-theme="dark"]{color-scheme:dark;--bg:#151514;--pn:#1f1f1d;--tx:#eeece6;--mu:#9a978e;--bd:#33322f;--ac:#8b84ff;--vp:#101010}
+html,body{height:100%}
+body{margin:0;background:var(--bg);color:var(--tx);font:14px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+.app{display:flex;height:100%}
+aside{width:320px;flex:none;background:var(--pn);border-right:1px solid var(--bd);padding:16px;overflow:auto}
+main{flex:1;position:relative;background:var(--vp);min-height:320px}
+canvas#gl{position:absolute;inset:0;width:100%;height:100%;touch-action:none;cursor:grab}
+h1{font-size:17px;margin:0 0 2px}
+.sub{color:var(--mu);font-size:12px;margin:0 0 12px}
+.drop{display:block;border:1.5px dashed var(--bd);border-radius:10px;padding:16px;text-align:center;cursor:pointer;color:var(--mu)}
+.drop:hover,.drop.on{border-color:var(--ac);color:var(--tx)}
+.drop input{display:none}
+.row{margin-top:11px}
+.row label{display:flex;justify-content:space-between;font-size:12px;color:var(--mu)}
+.row output{color:var(--tx);font-variant-numeric:tabular-nums}
+input[type=range]{width:100%;accent-color:var(--ac);margin:4px 0 0}
+select{width:100%;padding:7px;border-radius:8px;border:1px solid var(--bd);background:var(--bg);color:var(--tx);margin-top:4px}
+.chk{display:flex;gap:8px;align-items:center;margin-top:11px;font-size:13px}
+button{width:100%;margin-top:14px;padding:11px;border:0;border-radius:10px;background:var(--ac);color:#fff;font-weight:600;font-size:14px;cursor:pointer}
+button:disabled{opacity:.4;cursor:not-allowed}
+.note{font-size:11.5px;color:var(--mu);margin-top:12px;line-height:1.5}
+#ph{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:var(--mu);text-align:center;padding:20px;pointer-events:none}
+#st{position:absolute;left:12px;bottom:12px;font-size:12px;color:var(--mu);background:var(--pn);border:1px solid var(--bd);border-radius:8px;padding:4px 9px}
+@media(max-width:760px){.app{flex-direction:column-reverse}aside{width:auto;max-height:50%;border-right:0;border-top:1px solid var(--bd)}main{min-height:0}}
+</style></head><body>
+<div class="app">
+<aside>
+<h1>Photo → GLB</h1>
+<p class="sub">Turn a photo into a textured 3D model you can rotate and export.</p>
+<label class="drop" id="dz"><input type="file" id="file" accept="image/*"><b>Choose a photo</b><br><span style="font-size:12px">or drop one here (PNG, JPG, WebP)</span></label>
+<div class="row"><label>Depth method</label><select id="mode">
+<option value="i0">Inflate · bright areas closer</option>
+<option value="i1">Inflate · dark areas closer</option>
+<option value="h0">Heightmap · bright = closer</option>
+<option value="h1">Heightmap · dark = closer</option></select></div>
+<div id="sl"></div>
+<label class="chk"><input type="checkbox" id="bg" checked> Remove background</label>
+<label class="chk"><input type="checkbox" id="wire"> Wireframe</label>
+<button id="exp" disabled>Export GLB</button>
+<p class="note" id="msg"></p>
+<p class="note">Real AI image-to-3D (like Meshy) invents the hidden back of an object with a neural network. This tool runs entirely in your browser and builds a solid, textured relief from the visible side: best for logos, portraits, products and objects on plain backgrounds. Nothing is uploaded.</p>
+</aside>
+<main><canvas id="gl"></canvas><div id="ph">Upload a photo to generate a 3D model.<br>Drag to rotate · scroll or pinch to zoom</div><div id="st" hidden></div></main>
+</div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+const $=s=>document.querySelector(s);
+const defs=[['res','Mesh detail',64,400,1,220],['depth','Depth',0,.6,.01,.24],['base','Base thickness',.01,.2,.01,.05],['detail','Photo detail',0,1,.01,.4],['round','Roundness',.4,1.6,.01,1],['smooth','Smoothing',0,10,1,3],['tol','Background tolerance',5,150,1,45],['erode','Edge trim',0,4,1,1]];
+const P={};let timer;
+defs.forEach(([id,l,mn,mx,st,v])=>{P[id]=v;const d=document.createElement('div');d.className='row';
+d.innerHTML=`<label>${l}<output>${v}</output></label><input type="range" min="${mn}" max="${mx}" step="${st}" value="${v}">`;
+const r=d.querySelector('input'),o=d.querySelector('output');
+r.oninput=()=>{P[id]=+r.value;o.textContent=r.value;sched()};$('#sl').appendChild(d)});
+$('#mode').onchange=$('#bg').onchange=()=>sched();
+function sched(){clearTimeout(timer);timer=setTimeout(build,60)}
+
+// ---- three.js viewer ----
+const cv=$('#gl'),rn=new THREE.WebGLRenderer({canvas:cv,antialias:true,alpha:true,preserveDrawingBuffer:false});
+rn.setPixelRatio(Math.min(devicePixelRatio,2));rn.outputEncoding=THREE.sRGBEncoding;
+const scene=new THREE.Scene(),cam=new THREE.PerspectiveCamera(35,1,.01,50);scene.add(cam);
+scene.add(new THREE.HemisphereLight(0xffffff,0x9a9a9a,.95));
+const dl=new THREE.DirectionalLight(0xffffff,.7);dl.position.set(1,1.5,2);cam.add(dl);
+let th=.45,ph=.18,rad=2.4,mesh=null,cur=null,tex=null,dirty=true;
+function place(){cam.position.set(rad*Math.sin(th)*Math.cos(ph),rad*Math.sin(ph),rad*Math.cos(th)*Math.cos(ph));cam.lookAt(0,0,0);dirty=true}
+function resize(){const r=cv.parentElement.getBoundingClientRect();rn.setSize(r.width,r.height,false);cam.aspect=r.width/r.height||1;cam.updateProjectionMatrix();dirty=true}
+new ResizeObserver(resize).observe(cv.parentElement);place();resize();
+(function loop(){requestAnimationFrame(loop);if(dirty){dirty=false;rn.render(scene,cam)}})();
+const ptrs=new Map();let pd=0;
+cv.onpointerdown=e=>{cv.setPointerCapture(e.pointerId);ptrs.set(e.pointerId,[e.clientX,e.clientY]);cv.style.cursor='grabbing'};
+cv.onpointerup=cv.onpointercancel=e=>{ptrs.delete(e.pointerId);pd=0;cv.style.cursor='grab'};
+cv.onpointermove=e=>{if(!ptrs.has(e.pointerId))return;const o=ptrs.get(e.pointerId);
+if(ptrs.size===1){th-=(e.clientX-o[0])*.008;ph=Math.max(-1.5,Math.min(1.5,ph+(e.clientY-o[1])*.008))}
+ptrs.set(e.pointerId,[e.clientX,e.clientY]);
+if(ptrs.size===2){const [a,b]=[...ptrs.values()],d=Math.hypot(a[0]-b[0],a[1]-b[1]);if(pd)rad=Math.max(.8,Math.min(8,rad*pd/d));pd=d}
+place()};
+cv.onwheel=e=>{e.preventDefault();rad=Math.max(.8,Math.min(8,rad*Math.exp(e.deltaY*.001)));place()};
+$('#wire').onchange=e=>{if(mesh){mesh.material.wireframe=e.target.checked;dirty=true}};
+
+// ---- image loading ----
+const sc=document.createElement('canvas'),sx=sc.getContext('2d',{willReadFrequently:true});let src=false;
+function load(f){if(!f||!f.type.startsWith('image/'))return;const fr=new FileReader();
+fr.onload=()=>{const im=new Image();im.onload=()=>{const m=Math.min(1,1024/Math.max(im.width,im.height));
+sc.width=Math.round(im.width*m);sc.height=Math.round(im.height*m);sx.clearRect(0,0,sc.width,sc.height);sx.drawImage(im,0,0,sc.width,sc.height);
+src=true;$('#ph').hidden=true;$('#ph').style.display='none';if(tex)tex.dispose();
+tex=new THREE.CanvasTexture(sc);tex.flipY=false;tex.encoding=THREE.sRGBEncoding;tex.anisotropy=8;
+th=.45;ph=.18;rad=2.4;place();build()};im.src=fr.result};fr.readAsDataURL(f)}
+$('#file').onchange=e=>load(e.target.files[0]);
+const dz=$('#dz');['dragover','dragenter'].forEach(t=>addEventListener(t,e=>{e.preventDefault();dz.classList.add('on')}));
+['dragleave','drop'].forEach(t=>addEventListener(t,e=>{e.preventDefault();dz.classList.remove('on')}));
+addEventListener('drop',e=>load(e.dataTransfer.files[0]));
+
+// ---- mesh generation ----
+function build(){
+if(!src)return;const asp=sc.width/sc.height;
+const W=asp>=1?P.res:Math.max(8,Math.round(P.res*asp)),H=asp>=1?Math.max(8,Math.round(P.res/asp)):P.res,n=W*H;
+const g=document.createElement('canvas');g.width=W;g.height=H;const gx=g.getContext('2d',{willReadFrequently:true});
+gx.imageSmoothingQuality='high';gx.drawImage(sc,0,0,W,H);const d=gx.getImageData(0,0,W,H).data;
+let mask=new Uint8Array(n).fill(1);
+if($('#bg').checked){
+const bord=[];for(let x=0;x<W;x++)bord.push(x,(H-1)*W+x);for(let y=0;y<H;y++)bord.push(y*W,y*W+W-1);
+let r=0,gg=0,b=0,c=0;for(const k of bord)if(d[k*4+3]>=128){r+=d[k*4];gg+=d[k*4+1];b+=d[k*4+2];c++}
+if(c){r/=c;gg/=c;b/=c}
+const isbg=k=>d[k*4+3]<128||(c>0&&Math.hypot(d[k*4]-r,d[k*4+1]-gg,d[k*4+2]-b)<P.tol);
+const bm=new Uint8Array(n),st=[];for(const k of bord)if(!bm[k]&&isbg(k)){bm[k]=1;st.push(k)}
+while(st.length){const k=st.pop(),x=k%W,y=(k/W)|0;
+for(const[nx,ny]of[[x-1,y],[x+1,y],[x,y-1],[x,y+1]]){if(nx<0||ny<0||nx>=W||ny>=H)continue;const q=ny*W+nx;if(!bm[q]&&isbg(q)){bm[q]=1;st.push(q)}}}
+mask=bm.map(v=>1-v);
+for(let t=0;t<P.erode;t++){const m2=mask.slice();for(let y=0;y<H;y++)for(let x=0;x<W;x++){const k=y*W+x;
+if(mask[k]&&(x==0||y==0||x==W-1||y==H-1||!mask[k-1]||!mask[k+1]||!mask[k-W]||!mask[k+W]))m2[k]=0}mask=m2}
+}
+let tot=0;for(let k=0;k<n;k++)tot+=mask[k];
+if(tot<n*.01){mask.fill(1);$('#msg').textContent='Background removal found no subject, so the whole image is used. Try a higher tolerance.'}else $('#msg').textContent='';
+// distance to edge (chamfer)
+const D=new Float32Array(n);for(let k=0;k<n;k++)D[k]=mask[k]?1e6:0;
+const G=(x,y)=>(x<0||y<0||x>=W||y>=H)?0:D[y*W+x];
+for(let y=0;y<H;y++)for(let x=0;x<W;x++){const k=y*W+x;if(D[k])D[k]=Math.min(D[k],G(x-1,y)+1,G(x,y-1)+1,G(x-1,y-1)+1.414,G(x+1,y-1)+1.414)}
+for(let y=H-1;y>=0;y--)for(let x=W-1;x>=0;x--){const k=y*W+x;if(D[k])D[k]=Math.min(D[k],G(x+1,y)+1,G(x,y+1)+1,G(x+1,y+1)+1.414,G(x-1,y+1)+1.414)}
+let mx=1;for(let k=0;k<n;k++)if(D[k]>mx)mx=D[k];
+// luminance
+const L=new Float32Array(n);let lo=1,hi=0;
+for(let k=0;k<n;k++){L[k]=(.299*d[k*4]+.587*d[k*4+1]+.114*d[k*4+2])/255;if(mask[k]){if(L[k]<lo)lo=L[k];if(L[k]>hi)hi=L[k]}}
+const mode=$('#mode').value,inv=mode[1]=='1',inflate=mode[0]=='i';let Z=new Float32Array(n);
+for(let k=0;k<n;k++){if(!mask[k])continue;let l=(L[k]-lo)/((hi-lo)||1);if(inv)l=1-l;
+if(inflate){const dn=Math.min(1,D[k]/(mx*.999)),c=Math.sqrt(Math.max(0,1-(1-dn)*(1-dn)));Z[k]=Math.pow(c,P.round)*((1-P.detail)+P.detail*l)}else Z[k]=l}
+for(let it=0;it<P.smooth;it++){const T=new Float32Array(n);
+for(let y=0;y<H;y++)for(let x=0;x<W;x++){const k=y*W+x;if(!mask[k])continue;let s=0,w=0;
+for(let dy=-1;dy<=1;dy++)for(let dx=-1;dx<=1;dx++){const nx=x+dx,ny=y+dy;if(nx<0||ny<0||nx>=W||ny>=H)continue;const q=ny*W+nx;if(mask[q]){s+=Z[q];w++}}T[k]=s/w}Z=T}
+// vertices
+const cw=W-1,ch=H-1,cm=new Uint8Array(cw*ch),fm=new Int32Array(n).fill(-1);let cnt=0;
+for(let j=0;j<ch;j++)for(let i=0;i<cw;i++){const k=j*W+i;if(mask[k]&&mask[k+1]&&mask[k+W]&&mask[k+W+1]){cm[j*cw+i]=1;for(const q of[k,k+1,k+W,k+W+1])if(fm[q]<0)fm[q]=cnt++}}
+if(!cnt){$('#msg').textContent='Nothing to build. Lower the edge trim or raise tolerance.';return}
+const wd=asp>=1?1:asp,ht=asp>=1?1/asp:1,pos=new Float32Array(cnt*6),uv=new Float32Array(cnt*4);let zm=0;
+for(let k=0;k<n;k++){const v=fm[k];if(v<0)continue;const i=k%W,j=(k/W)|0,x=(i/(W-1)-.5)*wd,y=(.5-j/(H-1))*ht,z=P.base+Z[k]*P.depth;if(z>zm)zm=z;
+pos.set([x,y,z],v*3);pos.set([x,y,0],(v+cnt)*3);uv.set([i/(W-1),j/(H-1)],v*2);uv.set([i/(W-1),j/(H-1)],(v+cnt)*2)}
+for(let v=0;v<cnt*2;v++)pos[v*3+2]-=zm/2;
+const ix=[],F=k=>fm[k],B=k=>fm[k]+cnt,T=3,wuv=new Map(),wp=[],wu=[];let wn=cnt*2;
+const inner=k=>{if(wuv.has(k))return wuv.get(k);const x=k%W,y=(k/W)|0;let best=null,bd=1e9;
+for(let dy=-6;dy<=6;dy++)for(let dx=-6;dx<=6;dx++){const nx=x+dx,ny=y+dy;if(nx<0||ny<0||nx>=W||ny>=H)continue;const q=ny*W+nx;if(mask[q]&&D[q]>T){const dd=dx*dx+dy*dy;if(dd<bd){bd=dd;best=[nx/(W-1),ny/(H-1)]}}}
+if(!best)best=[x/(W-1),y/(H-1)];wuv.set(k,best);return best};
+const wall=(p,q)=>{for(const[v,k]of[[F(p),p],[F(q),q],[B(p),p],[B(q),q]]){wp.push(pos[v*3],pos[v*3+1],pos[v*3+2]);wu.push(...inner(k))}ix.push(wn,wn+1,wn+2,wn+1,wn+3,wn+2);wn+=4};
+for(let j=0;j<ch;j++)for(let i=0;i<cw;i++){if(!cm[j*cw+i])continue;const a=j*W+i,b=a+1,c=a+W,e=c+1;
+ix.push(F(c),F(e),F(b),F(c),F(b),F(a),B(c),B(b),B(e),B(c),B(a),B(b));
+if(j==0||!cm[(j-1)*cw+i])wall(a,b);if(j==ch-1||!cm[(j+1)*cw+i])wall(e,c);
+if(i==0||!cm[j*cw+i-1])wall(c,a);if(i==cw-1||!cm[j*cw+i+1])wall(b,e)}
+const P2=new Float32Array(pos.length+wp.length);P2.set(pos);P2.set(wp,pos.length);const U2=new Float32Array(uv.length+wu.length);U2.set(uv);U2.set(wu,uv.length);
+const geo=new THREE.BufferGeometry();geo.setAttribute('position',new THREE.BufferAttribute(P2,3));geo.setAttribute('uv',new THREE.BufferAttribute(U2,2));
+geo.setIndex(new THREE.BufferAttribute(new Uint32Array(ix),1));geo.computeVertexNormals();
+if(mesh){scene.remove(mesh);mesh.geometry.dispose();mesh.material.dispose()}
+mesh=new THREE.Mesh(geo,new THREE.MeshStandardMaterial({map:tex,roughness:.85,metalness:0,side:THREE.DoubleSide,wireframe:$('#wire').checked}));
+scene.add(mesh);cur=geo;dirty=true;
+const s=$('#st');s.hidden=false;s.textContent=`${(wn).toLocaleString()} vertices · ${(ix.length/3).toLocaleString()} triangles`;
+$('#exp').disabled=!dl_ok}
+
+// ---- GLB + ZIP writers ----
+async function makeGLB(){
+const geo=cur,pa=geo.attributes.position.array,na=geo.attributes.normal.array,ua=geo.attributes.uv.array,ia=geo.index.array;
+const blob=await new Promise(r=>sc.toBlob(r,'image/png')),png=new Uint8Array(await blob.arrayBuffer());
+const parts=[[new Uint8Array(pa.buffer,pa.byteOffset,pa.byteLength),34962],[new Uint8Array(na.buffer,na.byteOffset,na.byteLength),34962],[new Uint8Array(ua.buffer,ua.byteOffset,ua.byteLength),34962],[new Uint8Array(ia.buffer,ia.byteOffset,ia.byteLength),34963],[png,0]];
+let off=0;const views=[],offs=[];for(const[b,t]of parts){offs.push(off);const v={buffer:0,byteOffset:off,byteLength:b.length};if(t)v.target=t;views.push(v);off+=(b.length+3)&~3}
+const mn=[1e9,1e9,1e9],mxv=[-1e9,-1e9,-1e9];for(let i=0;i<pa.length;i++){const c=i%3;if(pa[i]<mn[c])mn[c]=pa[i];if(pa[i]>mxv[c])mxv[c]=pa[i]}
+const js={asset:{version:'2.0',generator:'Photo to GLB'},scene:0,scenes:[{nodes:[0]}],nodes:[{mesh:0,name:'PhotoModel'}],
+meshes:[{primitives:[{attributes:{POSITION:0,NORMAL:1,TEXCOORD_0:2},indices:3,material:0}]}],
+materials:[{pbrMetallicRoughness:{baseColorTexture:{index:0},metallicFactor:0,roughnessFactor:.85},doubleSided:true}],
+textures:[{source:0,sampler:0}],samplers:[{magFilter:9729,minFilter:9987,wrapS:33071,wrapT:33071}],images:[{bufferView:4,mimeType:'image/png'}],
+accessors:[{bufferView:0,componentType:5126,count:pa.length/3,type:'VEC3',min:mn,max:mxv},{bufferView:1,componentType:5126,count:na.length/3,type:'VEC3'},{bufferView:2,componentType:5126,count:ua.length/2,type:'VEC2'},{bufferView:3,componentType:5125,count:ia.length,type:'SCALAR'}],
+bufferViews:views,buffers:[{byteLength:off}]};
+let jb=new TextEncoder().encode(JSON.stringify(js));const jl=(jb.length+3)&~3,tl=12+8+jl+8+off,out=new Uint8Array(tl),dv=new DataView(out.buffer);
+dv.setUint32(0,0x46546C67,true);dv.setUint32(4,2,true);dv.setUint32(8,tl,true);dv.setUint32(12,jl,true);dv.setUint32(16,0x4E4F534A,true);
+out.fill(32,20,20+jl);out.set(jb,20);const bo=20+jl;dv.setUint32(bo,off,true);dv.setUint32(bo+4,0x004E4942,true);
+parts.forEach(([b],i)=>out.set(b,bo+8+offs[i]));return out}
+let crcT;function crc32(b){if(!crcT)crcT=Array.from({length:256},(_,n)=>{let c=n;for(let k=0;k<8;k++)c=c&1?0xEDB88320^(c>>>1):c>>>1;return c>>>0});let r=-1;for(let i=0;i<b.length;i++)r=crcT[(r^b[i])&255]^(r>>>8);return(r^-1)>>>0}
+function zip(name,data){const nb=new TextEncoder().encode(name),crc=crc32(data),L=30+nb.length,out=new Uint8Array(L+data.length+46+nb.length+22),v=new DataView(out.buffer),s=data.length;
+v.setUint32(0,0x04034b50,true);v.setUint16(4,20,true);v.setUint16(12,0x21,true);v.setUint32(14,crc,true);v.setUint32(18,s,true);v.setUint32(22,s,true);v.setUint16(26,nb.length,true);out.set(nb,30);out.set(data,L);
+let o=L+s;v.setUint32(o,0x02014b50,true);v.setUint16(o+4,20,true);v.setUint16(o+6,20,true);v.setUint16(o+14,0x21,true);v.setUint32(o+16,crc,true);v.setUint32(o+20,s,true);v.setUint32(o+24,s,true);v.setUint16(o+28,nb.length,true);out.set(nb,o+46);
+o+=46+nb.length;v.setUint32(o,0x06054b50,true);v.setUint16(o+8,1,true);v.setUint16(o+10,1,true);v.setUint32(o+12,46+nb.length,true);v.setUint32(o+16,L+s,true);return out}
+
+let dls=null,dl_ok=false;
+(async()=>{try{dls=await window.claude?.use('downloads')}catch(e){}dl_ok=!!dls;
+if(!dl_ok)$('#msg').textContent='Downloads are unavailable in this view. Open the artifact in claude.ai to export.';
+else if(cur)$('#exp').disabled=false})();
+$('#exp').onclick=async()=>{if(!cur||!dls)return;const b=$('#exp');b.disabled=true;b.textContent='Building…';
+try{const glb=await makeGLB();await dls.save({filename:'photo-model.zip',data:new Blob([zip('photo-model.glb',glb)])});
+$('#msg').textContent='Saved. Unzip it to get photo-model.glb (GLB files can’t be saved directly from here).'}
+catch(e){$('#msg').textContent=e&&e.code==='declined'?'Save cancelled.':'Export failed: '+((e&&e.message)||e)}
+b.disabled=false;b.textContent='Export GLB'};
+</script></body></html>
