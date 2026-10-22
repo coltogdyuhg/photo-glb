@@ -40,6 +40,7 @@ button:disabled{opacity:.4;cursor:not-allowed}
 <option value="h0">Heightmap · bright = closer</option>
 <option value="h1">Heightmap · dark = closer</option></select></div>
 <div id="sl"></div>
+<div class="row"><label>Export scale (1 to 400)<output id="scv">1×</output></label><div style="display:flex;gap:8px;align-items:center"><input type="range" id="scale" min="1" max="400" step="1" value="1"><input type="number" id="scn" min="1" max="400" step="any" value="1" style="width:72px;padding:6px;border-radius:8px;border:1px solid var(--bd);background:var(--bg);color:var(--tx)"></div><div class="note" id="dim" style="margin-top:4px">The longest side is 1 unit (1 m) at scale 1. Final size is shown here.</div></div>
 <label class="chk"><input type="checkbox" id="bg" checked> Remove background</label>
 <label class="chk"><input type="checkbox" id="wire"> Wireframe</label>
 <button id="exp" disabled>Export GLB</button>
@@ -153,13 +154,13 @@ const geo=new THREE.BufferGeometry();geo.setAttribute('position',new THREE.Buffe
 geo.setIndex(new THREE.BufferAttribute(new Uint32Array(ix),1));geo.computeVertexNormals();
 if(mesh){scene.remove(mesh);mesh.geometry.dispose();mesh.material.dispose()}
 mesh=new THREE.Mesh(geo,new THREE.MeshStandardMaterial({map:tex,roughness:.85,metalness:0,side:THREE.DoubleSide,wireframe:$('#wire').checked}));
-scene.add(mesh);cur=geo;dirty=true;
+scene.add(mesh);cur=geo;geo.userData.dims=[wd,ht,zm];showDim();dirty=true;
 const s=$('#st');s.hidden=false;s.textContent=`${(wn).toLocaleString()} vertices · ${(ix.length/3).toLocaleString()} triangles`;
 $('#exp').disabled=!dl_ok}
 
 // ---- GLB + ZIP writers ----
 async function makeGLB(){
-const geo=cur,pa=geo.attributes.position.array,na=geo.attributes.normal.array,ua=geo.attributes.uv.array,ia=geo.index.array;
+const S=getScale(),geo=cur,pa=Float32Array.from(geo.attributes.position.array,v=>v*S),na=geo.attributes.normal.array,ua=geo.attributes.uv.array,ia=geo.index.array;
 const blob=await new Promise(r=>sc.toBlob(r,'image/png')),png=new Uint8Array(await blob.arrayBuffer());
 const parts=[[new Uint8Array(pa.buffer,pa.byteOffset,pa.byteLength),34962],[new Uint8Array(na.buffer,na.byteOffset,na.byteLength),34962],[new Uint8Array(ua.buffer,ua.byteOffset,ua.byteLength),34962],[new Uint8Array(ia.buffer,ia.byteOffset,ia.byteLength),34963],[png,0]];
 let off=0;const views=[],offs=[];for(const[b,t]of parts){offs.push(off);const v={buffer:0,byteOffset:off,byteLength:b.length};if(t)v.target=t;views.push(v);off+=(b.length+3)&~3}
@@ -180,6 +181,10 @@ v.setUint32(0,0x04034b50,true);v.setUint16(4,20,true);v.setUint16(12,0x21,true);
 let o=L+s;v.setUint32(o,0x02014b50,true);v.setUint16(o+4,20,true);v.setUint16(o+6,20,true);v.setUint16(o+14,0x21,true);v.setUint32(o+16,crc,true);v.setUint32(o+20,s,true);v.setUint32(o+24,s,true);v.setUint16(o+28,nb.length,true);out.set(nb,o+46);
 o+=46+nb.length;v.setUint32(o,0x06054b50,true);v.setUint16(o+8,1,true);v.setUint16(o+10,1,true);v.setUint32(o+12,46+nb.length,true);v.setUint32(o+16,L+s,true);return out}
 
+function getScale(){const v=parseFloat($('#scn').value);return Math.min(400,Math.max(1,isFinite(v)?v:1))}
+function showDim(){const S=getScale();$('#scv').textContent=S+'×';if(cur){const[w,h,d]=cur.userData.dims;$('#dim').textContent=`Export size: ${(w*S).toFixed(2)} × ${(h*S).toFixed(2)} × ${(d*S).toFixed(2)} m (W × H × D)`}}
+$('#scale').oninput=e=>{$('#scn').value=e.target.value;showDim()};
+$('#scn').oninput=e=>{const v=getScale();if(e.target.value!==''&&v<=400)$('#scale').value=Math.round(v);showDim()};
 let dls=null,dl_ok=false;
 (async()=>{try{dls=await window.claude?.use('downloads')}catch(e){}dl_ok=!!dls;
 if(!dl_ok)$('#msg').textContent='Downloads are unavailable in this view. Open the artifact in claude.ai to export.';
